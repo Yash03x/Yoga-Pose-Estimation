@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import torch
 import math
 from scipy.ndimage.filters import gaussian_filter
 
@@ -7,13 +8,11 @@ def padRightDownCorner(img, stride, padValue):
     
     h = img.shape[0]
     w = img.shape[1]
-
     pad = 4 * [None]
     pad[0] = 0 
     pad[1] = 0 
     pad[2] = 0 if (h % stride == 0) else stride - (h % stride)
     pad[3] = 0 if (w % stride == 0) else stride - (w % stride)
-
     img_padded = np.pad(img, ((pad[0], pad[2]), (pad[1], pad[3]), (0, 0)), 'constant', constant_values=padValue) 
 
     return img_padded, pad
@@ -177,3 +176,39 @@ def drawpose(canvas, candidate, subset, scale=1):
             cv2.fillConvexPoly(cur_canvas, polygon, colors[i])
             canvas = cv2.addWeighted(canvas, 0.4, cur_canvas, 0.6, 0)
     return canvas
+
+def Net_Prediction(model, image, device, backbone = 'Mobilenet'):
+    scale_search = [1]
+    stride = 8
+    padValue = 128
+    heatmap_avg = np.zeros((image.shape[0], image.shape[1], 19))
+    paf_avg = np.zeros((image.shape[0], image.shape[1], 38))
+    
+    for m in range(len(scale_search)):
+        scale = scale_search[m]
+        imageToTest = cv2.resize(image, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        imageToTest_padded, pad = padRightDownCorner(imageToTest, stride, padValue)
+        
+        im = np.transpose(np.float32(imageToTest_padded), (2, 0, 1)) / 256 - 0.5
+        im = np.ascontiguousarray(im)
+        data = torch.from_numpy(im).float().unsqueeze(0).to(device)
+   
+        with torch.no_grad():
+            stages_output = model(data)
+            _paf = stages_output[-1].cpu().numpy()
+            _heatmap = stages_output[-2].cpu().numpy()  
+            
+        
+        heatmap = np.transpose(np.squeeze(_heatmap), (1, 2, 0))  
+        heatmap = cv2.resize(heatmap, (0, 0), fx=stride, fy=stride, interpolation=cv2.INTER_CUBIC)
+        heatmap = heatmap[:imageToTest_padded.shape[0] - pad[2], :imageToTest_padded.shape[1] - pad[3], :]
+        heatmap = cv2.resize(heatmap, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_CUBIC)     
+        
+        paf = np.transpose(np.squeeze(_paf), (1, 2, 0))  
+        paf = cv2.resize(paf, (0, 0), fx=stride, fy=stride, interpolation=cv2.INTER_CUBIC)
+        paf = paf[:imageToTest_padded.shape[0] - pad[2], :imageToTest_padded.shape[1] - pad[3], :]
+        paf = cv2.resize(paf, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_CUBIC)
+        heatmap_avg += heatmap / len(scale_search)
+        paf_avg += paf / len(scale_search)
+        
+    return heatmap_avg, paf_avg
